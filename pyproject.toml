@@ -1,0 +1,105 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "corepycler"
+dynamic = ["version"]
+description = ''
+readme = "README.md"
+requires-python = ">=3.12"
+license-files = { paths = ["LICENSE.txt"] }
+keywords = []
+authors = [
+  { name = "Haz", email = "mail@damianpala.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+    "click",
+    "click-params",
+    "click-option-group",
+    "logger @ git+https://github.com/DamianPala/logger.git@main",
+    "psutil",
+    "pydantic",
+    "pyfiglet",
+    "py-cpuinfo",
+    "ruamel.yaml",
+    "tabulate",
+]
+
+[project.urls]
+Documentation = "https://github.com/Haz/corepycler#readme"
+Issues = "https://github.com/Haz/corepycler/issues"
+Source = "https://github.com/Haz/corepycler"
+
+[project.scripts]
+corepycler = "corepycler.cli:cli"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.version]
+path = "src/corepycler/__about__.py"
+
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest",
+]
+
+[tool.hatch.envs.types]
+extra-dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src/corepycler tests}"
+
+[tool.coverage.run]
+source_pkgs = ["corepycler", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/corepycler/__about__.py",
+]
+
+[tool.coverage.paths]
+corepycler = ["src/corepycler", "*/corepycler/src/corepycler"]
+tests = ["tests", "*/corepycler/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+norecursedirs = [
+    ".",
+    ".svn",
+    "_build",
+    "tmp*",
+    "lib/third",
+    "lib",
+    "*.egg",
+    "bin",
+    "distutils",
+    "build",
+    "docs",
+    "demo"
+]
+addopts = "-p no:xdist --tb=long --capture=fd -rxX  --maxfail=10"
+python_files = ["*.py"]
+log_cli = true
+log_cli_level = "INFO"
+log_format = "[%(asctime)s.%(msecs)03d] - %(name)s:%(lineno)d [%(levelname)s]: %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"
+testpaths = [
+    "tests"
+]

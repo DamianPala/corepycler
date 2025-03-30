@@ -46,7 +46,11 @@ Use:
 corepycler -h
 ```
 
-to list avaliable profiles, that are handy to make different tests.
+to list avaliable profiles, that are handy to make different tests. Eg.
+
+```shell
+corepycler -p CO_STABILITY_FAST
+```
 
 ## License
 

@@ -12,8 +12,9 @@ import subprocess
 import textwrap
 import platform
 import importlib.metadata
-from enum import Enum, StrEnum, auto
 from typing import Optional
+from enum import Enum, StrEnum, auto
+from collections import defaultdict
 from pydantic import RootModel, Field
 from pydantic.dataclasses import dataclass
 from ruamel.yaml import YAML, CommentedMap
@@ -205,6 +206,7 @@ def core_test_loop(config: Config) -> None:
 
     cores = {k: v for k, v in cores.items() if k not in config.cores_to_ignore}
     bad_cores = set()
+    core_stats = defaultdict(lambda: [0, 0])
 
     iteration = 0
     error_cnt = 0
@@ -228,11 +230,14 @@ def core_test_loop(config: Config) -> None:
                                       config.suspend_periodically,
                                       config.prime95.fft_size)
                 tested_cores.add(core_id)
-                if not success:
+                if success:
+                    core_stats[core_id][0] += 1
+                else:
+                    core_stats[core_id][1] += 1
                     error_cnt += 1
                     if config.stop_on_error:
                         log.error(f"Stopping test due to error on core {core_id}.")
-                        return
+                        raise RuntimeError
                     else:
                         if config.skip_core_on_error:
                             log.warning(f"Skip core {core_id} due to an error in next iterations.")
@@ -244,8 +249,8 @@ def core_test_loop(config: Config) -> None:
                 time.sleep(config.delay_between_cores)
 
             iteration += 1
-    except KeyboardInterrupt:
-        if _stress_proc:
+    except (KeyboardInterrupt, RuntimeError):
+        if _stress_proc and _stress_proc.poll() is None:
             _stress_proc.terminate()
             _stress_proc.wait()
 
@@ -257,7 +262,16 @@ def core_test_loop(config: Config) -> None:
     else:
         log.info(f"Errors detected: {error_cnt}")
     if iteration == config.max_iterations:
-        log.info(f"All test iterations completed successfully!")
+        log.info(f"All {iteration}/{config.max_iterations} test iterations completed successfully!")
+        log.info(f"Run time: {timedelta(seconds=int(time.time() - start_time))}")
+        log.info(f"Tested cores: {len(tested_cores)}/{len(cores)}")
+        print_core_stats(core_stats)
+
+
+def print_core_stats(core_stats: dict[int, list[int]]) -> None:
+    table_data = [[f"Core {core_id}", stats[0], stats[1]]for core_id, stats in core_stats.items()]
+    log.info("Core statistics:")
+    print(tabulate(table_data, headers=["", "Success", "Error"], tablefmt="simple"))
 
 
 def run_prime95(core_id: int,

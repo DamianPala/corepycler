@@ -17,7 +17,7 @@ The main reason for developing this tool is that `corecycler` supports only Wind
 ```bash
 sudo apt install pipx -y
 pipx install hatch
-git clone git@github.com:DamianPala/tig-manager.git && cd corepycler
+git clone git@github.com:DamianPala/corepycler.git && cd corepycler
 hatch shell
 corepycler
 ```
@@ -29,7 +29,7 @@ corepycler
 Dump configuration file using:
 
 ```shell
-corepycler -d
+corepycler dump-config
 ```
 
 Parameter description is included in this config file that is YAML formated. You can use this file later by:
@@ -50,6 +50,14 @@ to list avaliable profiles, that are handy to make different tests. Eg.
 
 ```shell
 corepycler -p CO_STABILITY_FAST
+```
+
+### Burn CPU
+
+You can start stress test on all cores using:
+
+```shell
+corepycler burn <duration-minutes>
 ```
 
 ## License

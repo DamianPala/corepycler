@@ -23,6 +23,7 @@ from pyfiglet import Figlet
 from datetime import datetime, timedelta
 from click_option_group import optgroup, MutuallyExclusiveOptionGroup
 from tabulate import tabulate
+from yaspin import yaspin
 
 from .__about__ import __version__
 from . import APP_NAME
@@ -42,11 +43,21 @@ class UpperStrEnum(StrEnum):
         return name.upper()
 
 
-class Help(click.Command):
-    def format_help(self, ctx, formatter):
-        author = importlib.metadata.metadata(__package__)["Author-email"].split()[0]
-        click.echo(Figlet(font='slant', width=90).renderText(APP_NAME))
-        click.echo(f"By {author}, version: {__version__}\n")
+def render_help_header() -> None:
+    author = importlib.metadata.metadata(__package__)["Author-email"].split()[0]
+    click.echo(Figlet(font='slant', width=90).renderText(APP_NAME))
+    click.echo(f"By {author}, version: {__version__}\n")
+
+
+class HelpGroup(click.Group):
+    def format_help(self, ctx, formatter) -> None:
+        render_help_header()
+        super().format_help(ctx, formatter)
+
+
+class HelpCommand(click.Command):
+    def format_help(self, ctx, formatter) -> None:
+        render_help_header()
         super().format_help(ctx, formatter)
 
 
@@ -159,6 +170,7 @@ class Config:
     def print(self) -> None:
         physical_cores = psutil.cpu_count(logical=False)
         logical_cores = psutil.cpu_count(logical=True)
+        log.info("Configuration:")
         table_data = [["Stress test program", self.stress_test_program]]
         if self.stress_test_program == StressTestProgram.PRIME95:
             table_data.append(["Selected test mode", f"{self.prime95.mode}"])
@@ -174,8 +186,6 @@ class Config:
         table_data.append(["Number of iterations", f"{self.max_iterations}"])
         table_data.append(["Estimated testing time",
               f"{timedelta(seconds=int(self.runtime_per_core_m * 60 * physical_cores * self.max_iterations))}"])
-
-        log.info("Configuration:")
         print(tabulate(table_data, tablefmt="simple"))
 
 
@@ -274,6 +284,33 @@ def print_core_stats(core_stats: dict[int, list[int]]) -> None:
     print(tabulate(table_data, headers=["", "Success", "Error"], tablefmt="simple"))
 
 
+def burn_test(duration_m: int) -> None:
+    physical_cores = psutil.cpu_count(logical=False)
+    logical_cores = psutil.cpu_count(logical=True)
+    log.info("Configuration:")
+    table_data = [["Stress test program", "PRIME95"],
+                  ["Detected processor", cpuinfo.get_cpu_info()['brand_raw']],
+                  ["Logical/Physical cores", f"{logical_cores}/{physical_cores} cores"],
+                  ["Test duration", f"{duration_m} minutes"]
+    ]
+    print(tabulate(table_data, tablefmt="simple"))
+
+    start_time = time.time()
+    try:
+        success = run_prime95_burn(duration_m)
+        if not success:
+            log.error(f"Stopping test due to error.")
+            raise RuntimeError
+    except (KeyboardInterrupt, RuntimeError):
+        if _stress_proc and _stress_proc.poll() is None:
+            _stress_proc.terminate()
+            _stress_proc.wait()
+
+    log.info(f"All completed successfully!")
+    log.info(f"Run time: {timedelta(seconds=int(time.time() - start_time))}")
+    log.info(f"Tested cores: {physical_cores}/{physical_cores}")
+
+
 def run_prime95(core_id: int,
                 logical_id: int,
                 duration_m: int,
@@ -301,36 +338,42 @@ def run_prime95(core_id: int,
     next_tick = start_time + tick_interval
     test_pass_cnt = 0
 
-    while time.time() - start_time < duration_m * 60:
-        try:
-            line = _stress_proc.stdout and _stress_proc.stdout.readline()
-            if line:
-                log_msg = re.sub(r'^.*?] ', '', line).strip()
-                if log_msg:
-                    log.info(f"[Prime95]: {log_msg}")
-                    test_pass = detect_prime95_test_pass(log_msg)
-                    if test_pass is not None:
-                        if test_pass:
-                            test_pass_cnt += 1
-                        else:
-                            log.error(f"Prime95 test error on core {core_id}")
-                            return False
-        except BlockingIOError:
-            pass
+    with yaspin().dots12 as sp:
+        while time.time() - start_time < duration_m * 60:
+            try:
+                line = _stress_proc.stdout and _stress_proc.stdout.readline()
+                if line:
+                    log_msg = re.sub(r'^.*?] ', '', line).strip()
+                    if log_msg:
+                        with sp.hidden():
+                            log.info(f"[Prime95]: {log_msg}")
+                        test_pass = detect_prime95_test_pass(log_msg)
+                        if test_pass is not None:
+                            if test_pass:
+                                test_pass_cnt += 1
+                            else:
+                                with sp.hidden():
+                                    log.error(f"Prime95 test error on core {core_id}")
+                                return False
+            except BlockingIOError:
+                pass
 
-        if _stress_proc.poll() is not None:
-            log.error(f"Prime95 terminated unexpectedly on core {core_id}")
-            return False
+            if _stress_proc.poll() is not None:
+                with sp.hidden():
+                    log.error(f"Prime95 terminated unexpectedly on core {core_id}")
+                return False
 
-        if suspend_periodically and time.time() >= next_tick:
-            log.debug(f"Suspending the stress test process for {suspend_duration} seconds.")
-            ps_proc.suspend()
-            time.sleep(suspend_duration)
-            ps_proc.resume()
-            log.debug("Stress test process resumed.")
-            next_tick += tick_interval
+            if suspend_periodically and time.time() >= next_tick:
+                with sp.hidden():
+                    log.debug(f"Suspending the stress test process for {suspend_duration} seconds.")
+                ps_proc.suspend()
+                time.sleep(suspend_duration)
+                ps_proc.resume()
+                with sp.hidden():
+                    log.debug("Stress test process resumed.")
+                next_tick += tick_interval
 
-        time.sleep(0.1)
+            time.sleep(0.1)
 
     _stress_proc.terminate()
     _stress_proc.wait()
@@ -343,6 +386,67 @@ def run_prime95(core_id: int,
     return True
 
 
+def run_prime95_burn(duration_m: int) -> bool:
+    prepare_prime95_config(720, 720, 1, burning=True)
+
+    log.info(f"Running Prime95 on all cores for {duration_m} minutes.")
+
+    global _stress_proc
+    _stress_proc = subprocess.Popen([get_prime95_path(), '-t'],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=True)
+    os.set_blocking(_stress_proc.stdout.fileno(), False)
+
+    start_time = time.time()
+    test_pass_cnt = 0
+
+    with yaspin().dots12 as sp:
+        while time.time() - start_time < duration_m * 60:
+            try:
+                line = _stress_proc.stdout and _stress_proc.stdout.readline()
+                if line:
+                    log_msg = filter_prime95_logs(re.sub(r'^.*?] ', '', line).strip())
+                    if log_msg:
+                        with sp.hidden():
+                            log.info(f"[Prime95]: {log_msg}")
+                        test_pass = detect_prime95_test_pass(log_msg)
+                        if test_pass is not None:
+                            if test_pass:
+                                test_pass_cnt += 1
+                            else:
+                                with sp.hidden():
+                                    log.error(f"Prime95 test error.")
+                                return False
+            except BlockingIOError:
+                pass
+
+            if _stress_proc.poll() is not None:
+                with sp.hidden():
+                    log.error(f"Prime95 terminated unexpectedly.")
+                return False
+
+            time.sleep(0.1)
+
+    _stress_proc.terminate()
+    _stress_proc.wait()
+
+    if test_pass_cnt == 0:
+        log.error(f"No test pass detected.")
+        return False
+
+    log.info(f"Test completed in {timedelta(seconds=int(time.time() - start_time))}")
+    return True
+
+
+def filter_prime95_logs(log_msg: str) -> Optional[str]:
+    if 'worker starting' in log_msg.lower():
+        return None
+    if 'please read stress.txt' in log_msg.lower():
+        return None
+    return log_msg
+
+
 def detect_prime95_test_pass(log_msg: str) -> Optional[bool]:
     log_msg = log_msg.lower()
     if 'self-test' in log_msg:
@@ -351,38 +455,61 @@ def detect_prime95_test_pass(log_msg: str) -> Optional[bool]:
         return None
 
 
-def prepare_prime95_config(min_fft_k: int, max_fft_k: int, single_size_duration_m: int) -> None:
+def prepare_prime95_config(min_fft_k: int, max_fft_k: int, single_size_duration_m: int, burning: bool = False) -> None:
     log_path = LOGS_PATH / f"Prime95_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}_SSE_{min_fft_k}K-{max_fft_k}K.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     config_path = get_prime95_path().parent / "prime.txt"
-    config_path.write_text(textwrap.dedent(f"""\
-        RollingAverageIsFromV27=1
-        CpuSupportsSSE=1
-        CpuSupportsSSE2=1
-        CpuSupportsAVX=0
-        CpuSupportsAVX2=0
-        CpuSupportsFMA3=0
-        CpuSupportsAVX512F=0
-        NumWorkers=1
-        NumCores=1
-        CoresPerTest=1
-        results.txt={log_path.as_posix()}
-        TortureHyperthreading=0
-        TortureMem=0
-        TortureTime={single_size_duration_m}
-        MinTortureFFT={min_fft_k}
-        MaxTortureFFT={max_fft_k}
-        TortureWeak={get_torture_weak_value(False, False, False)}
-        V2UOptionsConverted=1
-        V300ptionsConverted=1
-        ExitOnX=1
-        ResultsFileTimestampInterval=60
-        EnableSetAffinity=0
-        EnableSetPriority=0
-        StressTester=1
-        UsePrimenet=0
-    """))
+    if burning:
+        config_path.write_text(textwrap.dedent(f"""\
+            RollingAverageIsFromV27=1
+            CpuSupportsSSE=1
+            CpuSupportsSSE2=1
+            CpuSupportsAVX=0
+            CpuSupportsAVX2=0
+            CpuSupportsFMA3=0
+            CpuSupportsAVX512F=0
+            results.txt={log_path.as_posix()}
+            TortureMem=0
+            TortureTime={single_size_duration_m}
+            MinTortureFFT={min_fft_k}
+            MaxTortureFFT={max_fft_k}
+            TortureWeak={get_torture_weak_value(False, False, False)}
+            V2UOptionsConverted=1
+            V300ptionsConverted=1
+            ExitOnX=1
+            ResultsFileTimestampInterval=60
+            StressTester=1
+            UsePrimenet=0
+        """))
+    else:
+        config_path.write_text(textwrap.dedent(f"""\
+            RollingAverageIsFromV27=1
+            CpuSupportsSSE=1
+            CpuSupportsSSE2=1
+            CpuSupportsAVX=0
+            CpuSupportsAVX2=0
+            CpuSupportsFMA3=0
+            CpuSupportsAVX512F=0
+            NumWorkers=1
+            NumCores=1
+            CoresPerTest=1
+            results.txt={log_path.as_posix()}
+            TortureHyperthreading=0
+            TortureMem=0
+            TortureTime={single_size_duration_m}
+            MinTortureFFT={min_fft_k}
+            MaxTortureFFT={max_fft_k}
+            TortureWeak={get_torture_weak_value(False, False, False)}
+            V2UOptionsConverted=1
+            V300ptionsConverted=1
+            ExitOnX=1
+            ResultsFileTimestampInterval=60
+            EnableSetAffinity=0
+            EnableSetPriority=0
+            StressTester=1
+            UsePrimenet=0
+        """))
 
 
 def get_torture_weak_value(cpu_supports_fma3: bool, cpu_supports_avx: bool, cpu_supports_avx512: bool) -> int:
@@ -473,38 +600,54 @@ def _get_executable_extension() -> str:
         raise NotImplementedError(f"Unsupported platform: {platform.system()}")
 
 
-@click.command(cls=Help, context_settings=dict(help_option_names=['-h', '--help']))
+@click.group(cls=HelpGroup, context_settings=dict(help_option_names=['-h', '--help']), invoke_without_command=True)
 @click.version_option(__version__, '-V', '--version', message='%(version)s')
 @optgroup.group('Configuration', cls=MutuallyExclusiveOptionGroup)
 @optgroup.option('-c', '--config', 'config_path', type=click.Path(exists=False, dir_okay=False),
                  help='Config file path.')
 @optgroup.option('-p', '--profile', type=click.Choice(list(Profile.__members__)), help='Testing profile.')
-@click.option('-d', '--dump-config', is_flag=True, help='Dump config to file.')
 @click.option('-v', '--verbose', is_flag=True, help='Enable verbose mode.')
-def cli(config_path: str, profile: str, dump_config: bool, verbose: bool):
+def cli(config_path: str, profile: str, verbose: bool):
     """Run Core Pycler."""
-
-    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
-    log.info(f"{APP_NAME} version {__version__}")
-
-    if dump_config:
-        path = ROOT_PATH / Config.get_default_filename()
-        Config().to_file(path)
-        log.info(f'Configuration file written in the: {path}')
-        return
-
-    if profile:
-        config = Profile[profile].value
-    else:
-        if config_path:
-            config = Config.from_file(config_path)
-        else:
-            log.info("Running with default configuration.")
-            config = Config()
 
     # TODO: Add support for other platforms
     if platform.system() != 'Linux':
         raise NotImplementedError(f"Unsupported platform: {platform.system()}")
 
-    config.print()
-    core_test_loop(config)
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
+    log.info(f"{APP_NAME} version {__version__}")
+
+    if not click.get_current_context().invoked_subcommand:
+        if profile:
+            config = Profile[profile].value
+        else:
+            if config_path:
+                config = Config.from_file(config_path)
+            else:
+                log.info("Running with default configuration.")
+                config = Config()
+
+        config.print()
+        core_test_loop(config)
+
+
+@cli.command(cls=HelpCommand)
+@click.argument('duration', type=click.INT)
+def burn(duration: int):
+    """Burn CPU using all cores for [DURATION] minutes."""
+
+    burn_test(duration)
+
+
+@cli.command(cls=HelpCommand)
+@click.option('-p', '--path', type=click.Path(exists=False, dir_okay=False), default=None,
+              help='Path in which a file will be written.')
+def dump_config(path: str):
+    """Dump config to a file."""
+
+    if path:
+        path = Path(path)
+    else:
+        path = ROOT_PATH / Config.get_default_filename()
+    Config().to_file(path)
+    log.info(f'Configuration file written in the: {path}')

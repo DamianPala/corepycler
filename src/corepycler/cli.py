@@ -440,9 +440,12 @@ def run_prime95_burn(duration_m: int) -> bool:
 
 
 def filter_prime95_logs(log_msg: str) -> Optional[str]:
-    if 'worker starting' in log_msg.lower():
-        return None
-    if 'please read stress.txt' in log_msg.lower():
+    ignore_keywords = (
+        "worker starting",
+        "worker stopped",
+        "please read stress.txt",
+    )
+    if any(kw in log_msg.lower() for kw in ignore_keywords):
         return None
     return log_msg
 
@@ -451,6 +454,8 @@ def detect_prime95_test_pass(log_msg: str) -> Optional[bool]:
     log_msg = log_msg.lower()
     if 'self-test' in log_msg:
         return bool(re.search(r'self[- ]test\s+\d+k?\s+passed!?', log_msg))
+    elif 'torture test failed' in log_msg or 'fatal error' in log_msg:
+        return False
     else:
         return None
 

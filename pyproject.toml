@@ -51,6 +51,7 @@ path = "src/corepycler/__about__.py"
 [tool.hatch.envs.default]
 dependencies = [
     "pytest",
+    "pytest-mock",
 ]
 
 [tool.hatch.envs.types]

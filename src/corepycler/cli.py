@@ -10,6 +10,7 @@ import psutil
 import cpuinfo
 import subprocess
 import textwrap
+import statistics
 import platform
 import importlib.metadata
 from typing import Optional
@@ -246,7 +247,7 @@ def core_test_loop(config: Config) -> None:
                     core_stats[core_id][1] += 1
                     error_cnt += 1
                     if config.stop_on_error:
-                        log.error(f"Stopping test due to error on core {core_id}.")
+                        log.error(f"Stopping test due to an error on core {core_id}.")
                         raise RuntimeError
                     else:
                         if config.skip_core_on_error:
@@ -299,7 +300,7 @@ def burn_test(duration_m: int) -> None:
     try:
         success = run_prime95_burn(duration_m)
         if not success:
-            log.error(f"Stopping test due to error.")
+            log.error(f"Stopping test due to an error.")
             raise RuntimeError
     except (KeyboardInterrupt, RuntimeError):
         if _stress_proc and _stress_proc.poll() is None:
@@ -336,6 +337,7 @@ def run_prime95(core_id: int,
     tick_interval = 10
     suspend_duration = 1
     next_tick = start_time + tick_interval
+    log_temps_next_tick = next_tick - tick_interval / 2
     test_pass_cnt = 0
 
     with yaspin().dots12 as sp:
@@ -363,15 +365,22 @@ def run_prime95(core_id: int,
                     log.error(f"Prime95 terminated unexpectedly on core {core_id}")
                 return False
 
-            if suspend_periodically and time.time() >= next_tick:
-                with sp.hidden():
-                    log.debug(f"Suspending the stress test process for {suspend_duration} seconds.")
-                ps_proc.suspend()
-                time.sleep(suspend_duration)
-                ps_proc.resume()
-                with sp.hidden():
-                    log.debug("Stress test process resumed.")
+            if time.time() >= next_tick:
+                if suspend_periodically:
+                    with sp.hidden():
+                        log.debug(f"Suspending the stress test process for {suspend_duration} seconds.")
+                    ps_proc.suspend()
+                    time.sleep(suspend_duration)
+                    ps_proc.resume()
+                    with sp.hidden():
+                        log.debug("Stress test process resumed.")
                 next_tick += tick_interval
+                log_temps_next_tick = next_tick - tick_interval / 2
+
+            if time.time() >= log_temps_next_tick:
+                log_temps_next_tick *= 2  # Do not print every iteration after tick till next tick.
+                with sp.hidden():
+                    print_cpu_temperature()
 
             time.sleep(0.1)
 
@@ -400,6 +409,8 @@ def run_prime95_burn(duration_m: int) -> bool:
 
     start_time = time.time()
     test_pass_cnt = 0
+    log_temps_interval = 30
+    log_temps_next_tick = start_time + log_temps_interval
 
     with yaspin().dots12 as sp:
         while time.time() - start_time < duration_m * 60:
@@ -426,6 +437,11 @@ def run_prime95_burn(duration_m: int) -> bool:
                     log.error(f"Prime95 terminated unexpectedly.")
                 return False
 
+            if time.time() >= log_temps_next_tick:
+                log_temps_next_tick += log_temps_interval
+                with sp.hidden():
+                    print_cpu_temperature()
+
             time.sleep(0.1)
 
     _stress_proc.terminate()
@@ -437,6 +453,55 @@ def run_prime95_burn(duration_m: int) -> bool:
 
     log.info(f"Test completed in {timedelta(seconds=int(time.time() - start_time))}")
     return True
+
+
+def print_cpu_temperature() -> None:
+    sensors_temperatures = psutil.sensors_temperatures()
+    core_temps = get_core_temps(sensors_temperatures) or get_cpu_thermal(sensors_temperatures)
+    if core_temps:
+        table_data = []
+        row_cnt = -1
+        for i, t in enumerate(core_temps):
+            if i % 8 == 0:
+                table_data.append([])
+                row_cnt += 1
+            table_data[row_cnt].append(f"C{i}: {t:.1f}")
+        log.info("Core temperatures [*C]:")
+        print(tabulate(table_data, tablefmt="simple_grid"))
+        log.info(f"Average CPU temperature: {statistics.mean(core_temps):.1f} *C")
+        return
+
+    k10temp = get_k10temp(sensors_temperatures)
+    if k10temp:
+        label, temp = next(iter(k10temp.items()))
+        log.info(f"CPU temperature {label}: {temp:.1f} *C")
+        return
+
+
+def get_core_temps(sensors_temperatures: dict) -> Optional[list[float]]:
+    if 'coretemp' in sensors_temperatures:
+        temps = [t for t in sensors_temperatures['coretemp'] if 'core' in t.label.lower()]
+        if temps:
+            def core_index(entry):
+                match = re.search(r'core\s*(\d+)', entry.label.lower())
+                return int(match.group(1)) if match else float('inf')
+            temps = sorted(temps, key=core_index)
+            return [t.current for t in temps]
+    return None
+
+
+def get_k10temp(sensors_temperatures: dict) -> Optional[dict[str, float]]:
+    if 'k10temp' in sensors_temperatures:
+        for t in sensors_temperatures['k10temp']:
+            if t.label.lower() in ('tctl', 'tdie'):
+                return {t.label: t.current}
+    return None
+
+
+def get_cpu_thermal(sensors_temperatures: dict) -> Optional[list[float]]:
+    if 'cpu_thermal' in sensors_temperatures:
+        return [t.current for t in sensors_temperatures['cpu_thermal']]
+    return None
 
 
 def filter_prime95_logs(log_msg: str) -> Optional[str]:

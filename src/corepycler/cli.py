@@ -186,7 +186,9 @@ class Config:
         table_data.append(["Test order of cores", f"{self.core_test_order}"])
         table_data.append(["Number of iterations", f"{self.max_iterations}"])
         table_data.append(["Estimated testing time",
-              f"{timedelta(seconds=int(self.runtime_per_core_m * 60 * physical_cores * self.max_iterations))}"])
+                           f"{timedelta(seconds=int((self.runtime_per_core_m * 60
+                                                     + self.delay_between_cores) * physical_cores * self.max_iterations)
+                                                - self.delay_between_cores)}"])
         print(tabulate(table_data, tablefmt="simple"))
 
 
@@ -227,20 +229,26 @@ def core_test_loop(config: Config) -> None:
     try:
         while iteration < config.max_iterations:
             tested_cores.clear()
-            for core_id, logical_id in cores.items():
+            for i, (core_id, logical_id) in enumerate(cores.items()):
                 if core_id in bad_cores:
                     log.info(f"Skipping core {core_id} due to previous error.")
                     continue
 
-                log.info(f"Progress: {core_id + 1}/{len(cores)} | Iteration {iteration + 1}/{config.max_iterations} "
-                         f"| Run time {timedelta(seconds=int(time.time() - start_time))}")
-
+                time_left = (config.runtime_per_core_m * 60 + config.delay_between_cores) * len(cores) * (
+                            config.max_iterations - iteration) - config.delay_between_cores
+                time_left -= (config.runtime_per_core_m * 60 + config.delay_between_cores) * i
                 success = run_prime95(core_id,
                                       logical_id,
                                       config.runtime_per_core_m,
                                       config.suspend_periodically,
-                                      config.prime95.fft_size)
+                                      config.prime95.fft_size,
+                                      time_left)
                 tested_cores.add(core_id)
+
+                log.info(f"Progress {len(tested_cores)}/{len(cores)} "
+                         f"| Iteration {iteration + 1}/{config.max_iterations} "
+                         f"| Run time {timedelta(seconds=int(time.time() - start_time))}")
+
                 if success:
                     core_stats[core_id][0] += 1
                 else:
@@ -256,8 +264,11 @@ def core_test_loop(config: Config) -> None:
                         else:
                             log.error(f"Error on core {core_id}.")
 
-                log.info(f"Waiting {config.delay_between_cores} s before next core.")
-                time.sleep(config.delay_between_cores)
+                is_last_core = core_id == list(cores.keys())[-1]
+                is_last_iteration = iteration == config.max_iterations - 1
+                if config.delay_between_cores and not (is_last_core and is_last_iteration):
+                    log.info(f"Waiting {config.delay_between_cores} s before next core.")
+                    time.sleep(config.delay_between_cores)
 
             iteration += 1
     except (KeyboardInterrupt, RuntimeError):
@@ -265,7 +276,7 @@ def core_test_loop(config: Config) -> None:
             _stress_proc.terminate()
             _stress_proc.wait()
 
-        log.info(f"Progress: {len(tested_cores)}/{len(cores)} | Iteration {iteration}/{config.max_iterations} "
+        log.info(f"Progress {len(tested_cores)}/{len(cores)} | Iteration {iteration}/{config.max_iterations} "
                  f"| Run time {timedelta(seconds=int(time.time() - start_time))}")
 
     if error_cnt == 0:
@@ -316,7 +327,8 @@ def run_prime95(core_id: int,
                 logical_id: int,
                 duration_m: int,
                 suspend_periodically: bool,
-                fft_size: tuple) -> bool:
+                fft_size: tuple,
+                time_left: int) -> bool:
     fft_size = Prime95FFTSize.convert_to_k(fft_size)
     prepare_prime95_config(fft_size[0], fft_size[1], 1)
 
@@ -382,6 +394,7 @@ def run_prime95(core_id: int,
                 with sp.hidden():
                     print_cpu_temperature()
 
+            sp.text = f"Time left: {timedelta(seconds=int(time_left - (time.time() - start_time)))}"
             time.sleep(0.1)
 
     _stress_proc.terminate()
@@ -442,6 +455,7 @@ def run_prime95_burn(duration_m: int) -> bool:
                 with sp.hidden():
                     print_cpu_temperature()
 
+            sp.text = f"Time left: {timedelta(seconds=int(duration_m * 60 - (time.time() - start_time)))}"
             time.sleep(0.1)
 
     _stress_proc.terminate()

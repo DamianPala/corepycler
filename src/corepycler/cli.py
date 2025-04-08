@@ -303,7 +303,7 @@ def burn_test(duration_m: int) -> None:
     table_data = [["Stress test program", "PRIME95"],
                   ["Detected processor", cpuinfo.get_cpu_info()['brand_raw']],
                   ["Logical/Physical cores", f"{logical_cores}/{physical_cores} cores"],
-                  ["Test duration", f"{duration_m} minutes"]
+                  ["Test duration", timedelta(seconds=int(duration_m * 60))]
     ]
     print(tabulate(table_data, tablefmt="simple"))
 

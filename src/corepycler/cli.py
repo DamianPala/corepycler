@@ -486,8 +486,8 @@ def print_cpu_temperature() -> None:
         print(tabulate(table_data, tablefmt="simple_grid"))
         _temperature_samples[time.time()] = statistics.mean(core_temps)
         temp_stats = calc_temperature_stats(_temperature_samples)
-        log.info(f"CPU temperature (last 15 min) min: {temp_stats['min']:.1f}°C, max: {temp_stats['max']:.1f}°C, "
-                 f"avg: {temp_stats['avg']:.1f}°C")
+        log.info(f"CPU temperature: {temp_stats['current']:.1f}°C | last 15 min - min: {temp_stats['min']:.1f}°C, "
+                 f"max: {temp_stats['max']:.1f}°C, avg: {temp_stats['avg']:.1f}°C")
         return
 
     k10temp = get_k10temp(sensors_temperatures)
@@ -495,8 +495,8 @@ def print_cpu_temperature() -> None:
         label, temp = next(iter(k10temp.items()))
         _temperature_samples[time.time()] = temp
         temp_stats = calc_temperature_stats(_temperature_samples)
-        log.info(f"CPU temperature (last 15 min) min: {temp_stats['min']:.1f}°C, max: {temp_stats['max']:.1f}°C, "
-                 f"avg: {temp_stats['avg']:.1f}°C")
+        log.info(f"CPU temperature: {temp_stats['current']:.1f}°C | last 15 min - min: {temp_stats['min']:.1f}°C, "
+                 f"max: {temp_stats['max']:.1f}°C, avg: {temp_stats['avg']:.1f}°C")
         return
 
 
@@ -507,11 +507,13 @@ def calc_temperature_stats(samples: dict[float, float], window_seconds: int = 15
     cutoff = time.time() - window_seconds
     recent = [temp for ts, temp in samples.items() if ts >= cutoff]
     target = recent if recent else list(samples.values())
+    latest_ts = max(samples.keys())
 
     return {
         'min': min(target),
         'max': max(target),
-        'avg': sum(target) / len(target)
+        'avg': sum(target) / len(target),
+        'current': samples[latest_ts]
     }
 
 

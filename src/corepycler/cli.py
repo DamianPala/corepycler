@@ -31,6 +31,7 @@ from . import APP_NAME
 
 log = logger.get_logger(__name__)
 _stress_proc: Optional[subprocess.Popen] = None
+_temperature_samples: dict[float, float] = {}
 
 ROOT_PATH = Path(__file__).parent.parent.parent
 TOOLS_PATH = ROOT_PATH / "tools"
@@ -470,6 +471,7 @@ def run_prime95_burn(duration_m: int) -> bool:
 
 
 def print_cpu_temperature() -> None:
+    global _temperature_samples
     sensors_temperatures = psutil.sensors_temperatures()
     core_temps = get_core_temps(sensors_temperatures) or get_cpu_thermal(sensors_temperatures)
     if core_temps:
@@ -482,14 +484,35 @@ def print_cpu_temperature() -> None:
             table_data[row_cnt].append(f"C{i}: {t:.1f}")
         log.info("Core temperatures [*C]:")
         print(tabulate(table_data, tablefmt="simple_grid"))
-        log.info(f"Average CPU temperature: {statistics.mean(core_temps):.1f} *C")
+        _temperature_samples[time.time()] = statistics.mean(core_temps)
+        temp_stats = calc_temperature_stats(_temperature_samples)
+        log.info(f"CPU temperature (last 15 min) min: {temp_stats['min']:.1f}°C, max: {temp_stats['max']:.1f}°C, "
+                 f"avg: {temp_stats['avg']:.1f}°C")
         return
 
     k10temp = get_k10temp(sensors_temperatures)
     if k10temp:
         label, temp = next(iter(k10temp.items()))
-        log.info(f"CPU temperature {label}: {temp:.1f} *C")
+        _temperature_samples[time.time()] = temp
+        temp_stats = calc_temperature_stats(_temperature_samples)
+        log.info(f"CPU temperature (last 15 min) min: {temp_stats['min']:.1f}°C, max: {temp_stats['max']:.1f}°C, "
+                 f"avg: {temp_stats['avg']:.1f}°C")
         return
+
+
+def calc_temperature_stats(samples: dict[float, float], window_seconds: int = 15 * 60) -> Optional[dict[str, float]]:
+    if not samples:
+        return None
+
+    cutoff = time.time() - window_seconds
+    recent = [temp for ts, temp in samples.items() if ts >= cutoff]
+    target = recent if recent else list(samples.values())
+
+    return {
+        'min': min(target),
+        'max': max(target),
+        'avg': sum(target) / len(target)
+    }
 
 
 def get_core_temps(sensors_temperatures: dict) -> Optional[list[float]]:

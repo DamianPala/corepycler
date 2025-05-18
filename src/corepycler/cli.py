@@ -319,7 +319,7 @@ def burn_test(duration_m: int) -> None:
             _stress_proc.terminate()
             _stress_proc.wait()
 
-    log.info(f"All completed successfully!")
+    log.info(f"All tests completed successfully!")
     log.info(f"Run time: {timedelta(seconds=int(time.time() - start_time))}")
     log.info(f"Tested cores: {physical_cores}/{physical_cores}")
 

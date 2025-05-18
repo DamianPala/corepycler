@@ -15,7 +15,7 @@ The main reason for developing this tool is that `corecycler` supports only Wind
 ## Installation
 
 ```bash
-sudo apt install pipx -y
+sudo apt install -y pipx
 pipx install hatch
 git clone git@github.com:DamianPala/corepycler.git && cd corepycler
 hatch shell
